@@ -41,6 +41,12 @@ async function fetchDocumentation() {
       }));
 
       console.log("Successfully fetched Svelte documentation");
+      console.log(`Loaded ${documentationLines.length} lines of documentation`);
+      // Log a few sample lines to verify content
+      console.log("Sample lines:");
+      documentationLines.slice(0, 3).forEach(line => {
+        console.log(`- ${line.text}`);
+      });
       return;
     } catch (error) {
       console.error("Failed to fetch Svelte documentation:", error instanceof Error ? error.message : String(error));
@@ -63,22 +69,28 @@ const server = new Server(
   },
   {
     capabilities: {
-      resources: {},
-      tools: {},
+      resources: {
+        listChanged: false
+      },
+      tools: {
+        listChanged: false
+      },
     },
   }
 );
 
 // List available documentation lines as resources
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  return {
-    resources: documentationLines.map(line => ({
-      uri: `svelte:///${line.id}`,
-      mimeType: "text/plain",
-      name: "Documentation Line",
-      description: `Svelte documentation line`
-    }))
-  };
+  console.log(`Total documentation lines: ${documentationLines.length}`);
+  const resources = documentationLines.map(line => ({
+    uri: `svelte:///${line.id}`,
+    mimeType: "text/plain",
+    name: "Documentation Line",
+    description: `Svelte documentation line: ${line.text.slice(0, 50)}...`
+  }));
+  console.log("First 5 resources:");
+  resources.slice(0, 5).forEach(r => console.log(`- ${r.uri}: ${r.description}`));
+  return { resources };
 });
 
 // Read specific documentation line
@@ -125,71 +137,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "search_docs") {
     const query = String(request.params.arguments?.query).toLowerCase();
+    console.log(`Searching for query: "${query}"`);
     const queryWords = query.split(/\s+/);
+    console.log(`Query words:`, queryWords);
 
-    // Calculate TF-IDF scores for all words in documentation
-    const wordCounts = new Map<string, number>();
-    const docFreq = new Map<string, number>();
-
-    // First pass: count word frequencies and document frequencies
-    documentationLines.forEach(line => {
-      const words = line.text.toLowerCase().match(/\w+/g) || [];
-      const uniqueWords = new Set(words);
-
-      uniqueWords.forEach(word => {
-        docFreq.set(word, (docFreq.get(word) || 0) + 1);
-      });
-
-      words.forEach(word => {
-        wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
-      });
-    });
-
-    // Second pass: score each line based on query words
+    // Score lines based purely on frequency of query matches
     const scoredLines = documentationLines.map(line => {
-      const text = line.text.toLowerCase();
-      const words = text.match(/[\w$\.]+/g) || [];
-      const totalWords = words.length;
-
-      let score = 0;
-      queryWords.forEach(queryWord => {
-        // Exact match bonus
-        const exactMatches = words.filter(w => w === queryWord).length;
-        // Partial match
-        const partialMatches = words.filter(w => w.includes(queryWord)).length;
-        // Full text match bonus
-        const fullTextMatch = text.includes(queryWord) ? 1 : 0;
-
-        // Calculate TF-IDF
-        const tf = (exactMatches * 2 + partialMatches + fullTextMatch) / totalWords;
-        const idf = Math.log(documentationLines.length / (docFreq.get(queryWord) || 1));
-
-        score += tf * idf;
-      });
-
-      // Add bonus for exact phrase match
-      if (text.includes(query.toLowerCase())) {
-        score *= 2;
-      }
-
-      // Bonus for multiple query words appearing close together
-      const allWordsIndexes = queryWords.map(word =>
-        words.findIndex(w => w.includes(word))
-      ).filter(index => index !== -1);
-
-      if (allWordsIndexes.length > 1) {
-        const maxIndex = Math.max(...allWordsIndexes);
-        const minIndex = Math.min(...allWordsIndexes);
-        if (maxIndex - minIndex <= 3) {
-          score *= 1.5; // Boost score for close proximity
-        }
-      }
-
-      return { ...line, score };
+      const text = line.text;
+      // Escape special regex characters and count exact occurrences
+      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const matches = (text.match(new RegExp(escapedQuery, 'gi')) || []).length;
+      return { ...line, score: matches };
     });
 
-    // Get top 3 scoring lines
+    // Get top 3 lines with most matches
     const results = scoredLines
+      .filter(line => line.score > 0) // Only include lines with matches
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .map(line => ({
@@ -197,11 +160,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: line.text
       }));
 
+    // Ensure we return an empty array if no results found
     return {
-      content: results.map(result => ({
+      content: results.length > 0 ? results.map(result => ({
         type: "text",
         text: result.content
-      }))
+      })) : [{
+        type: "text",
+        text: "No matches found"
+      }]
     };
   }
 
