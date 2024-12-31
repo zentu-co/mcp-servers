@@ -127,32 +127,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "search_docs") {
     const query = String(request.params.arguments?.query).toLowerCase();
-    const queryWords = query.split(/\s+/);
+    const queryWords = query.split(/\s+/).filter(word => word.length > 0);
 
-    // Score lines based purely on frequency of query matches
-    const scoredLines = documentationLines.map(line => {
-      const text = line.text;
-      // Escape special regex characters and count exact occurrences
-      const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const matches = (text.match(new RegExp(escapedQuery, 'gi')) || []).length;
-      return { ...line, score: matches };
-    });
+    if (queryWords.length === 0) {
+      return {
+        content: [{
+          type: "text",
+          text: "Please provide a valid search query"
+        }]
+      };
+    }
 
-    // Get top 3 lines with most matches
-    const results = scoredLines
-      .filter(line => line.score > 0) // Only include lines with matches
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
-      .map(line => ({
-        uri: `svelte:///${line.id}`,
-        content: line.text
-      }));
+    // Search each word separately and get top results
+    const wordResults = queryWords.map(word => {
+      // Score lines based on frequency of word matches
+      const scoredLines = documentationLines.map(line => {
+        const text = line.text.toLowerCase();
+        // Escape special regex characters and count exact occurrences
+        const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const matches = (text.match(new RegExp(escapedWord, 'gi')) || []).length;
+        return { ...line, score: matches };
+      });
 
-    // Ensure we return an empty array if no results found
+      // Get top result for this word
+      return scoredLines
+        .filter(line => line.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 1)
+        .map(line => ({
+          word,
+          uri: `svelte:///${line.id}`,
+          content: line.text
+        }))[0];
+    }).filter(result => result !== undefined);
+
+    // Return results or no matches message
     return {
-      content: results.length > 0 ? results.map(result => ({
+      content: wordResults.length > 0 ? wordResults.map(result => ({
         type: "text",
-        text: result.content
+        text: `Match for "${result.word}": ${result.content}`
       })) : [{
         type: "text",
         text: "No matches found"
