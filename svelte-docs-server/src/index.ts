@@ -33,12 +33,14 @@ async function fetchDocumentation() {
       }
       const content = await response.text();
 
-      // Simply split into lines
+      // Split into lines and filter out empty ones
       const lines = content.split('\n');
-      documentationLines = lines.map((line: string, index: number) => ({
-        id: `line-${index}`,
-        text: line
-      }));
+      documentationLines = lines
+        .filter((line: string) => line.trim().length > 0)
+        .map((line: string, index: number) => ({
+          id: `line-${index}`,
+          text: line
+        }));
 
       console.log("Successfully fetched Svelte documentation");
       console.log(`Loaded ${documentationLines.length} lines of documentation`);
