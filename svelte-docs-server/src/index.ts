@@ -24,19 +24,45 @@ interface DocumentationSection {
 
 let documentationSections: DocumentationSection[] = [];
 
-// Improved relevance scoring
-function getRelevanceScore(text: string, query: string): number {
-  text = text.toLowerCase();
-  query = query.toLowerCase();
+// Count occurrences of a word in text
+function countOccurrences(text: string, word: string): number {
+  const regex = new RegExp(word.toLowerCase(), 'g');
+  return (text.toLowerCase().match(regex) || []).length;
+}
 
-  // Exact match gets highest score
-  if (text.includes(query)) return 3;
+// Advanced relevance scoring
+function getRelevanceScore(text: string, query: string, isHeader: boolean = false): number {
+  const lowerText = text.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  const words = query.split(/\s+/);
 
-  // Count individual word matches
-  const queryWords = query.split(/\s+/);
-  return queryWords.reduce((score, word) => {
-    return score + (text.includes(word) ? 1 : 0);
-  }, 0);
+  // Single-word query - use simple exact matching
+  if (words.length === 1) {
+    if (isHeader && lowerText.includes(lowerQuery)) return 10000;
+    if (lowerText.includes(lowerQuery)) return 1000;
+    return 0;
+  }
+
+  // Multi-word query
+  let score = 0;
+
+  // Full query exact match
+  if (lowerText.includes(lowerQuery)) {
+    score += isHeader ? 10000 : 1000;
+    return score;
+  }
+
+  // Count matching words
+  const matchingWords = words.filter(word =>
+    lowerText.includes(word.toLowerCase())
+  );
+
+  // Only score if matches multiple words
+  if (matchingWords.length > 1) {
+    score += matchingWords.length * (isHeader ? 800 : 400);
+  }
+
+  return score;
 }
 
 async function fetchDocumentation() {
@@ -224,7 +250,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Handle search_docs tool
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "search_docs") {
-    const query = String(request.params.arguments?.query).toLowerCase();
+    const query = String(request.params.arguments?.query);
     const queryWords = query.split(/\s+/).filter(word => word.length > 0);
 
     if (queryWords.length === 0) {
@@ -236,24 +262,60 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Search through all content
-    const allContent = documentationSections.flatMap(section =>
-      section.content.map(text => ({
+    // Process all content with header-aware scoring
+    const allContent = documentationSections.flatMap(section => {
+      // Score the header itself
+      const headerScore = getRelevanceScore(section.header, query, true);
+
+      // Map content with header context
+      return section.content.map(text => ({
         header: section.header,
         text,
-        score: getRelevanceScore(text, query)
-      }))
-    );
+        exactScore: Math.max(headerScore, getRelevanceScore(text, query)),
+        wordScores: queryWords.map(word => ({
+          word,
+          frequency: countOccurrences(text, word)
+        }))
+      }));
+    });
 
-    // Get top 3 results
-    const results = allContent
-      .filter(item => item.score > 0)
-      .sort((a, b) => b.score - a.score)
+    // Get exact matches first
+    const exactMatches = allContent
+      .filter(item => item.exactScore > 0)
+      .sort((a, b) => b.exactScore - a.exactScore);
+
+    // For each word, get results prioritizing relevant sections
+    const wordResults = queryWords.flatMap(word => {
+      return allContent
+        .filter(item => item.wordScores.some(score => score.word === word && score.frequency > 0))
+        .map(item => {
+          // Check if this section is primarily about this word
+          const isRelevantSection = item.header.toLowerCase().includes(word.toLowerCase());
+          return {
+            ...item,
+            relevanceScore: isRelevantSection ? 100 : 1  // Heavily weight sections that are about the search term
+          };
+        })
+        .sort((a, b) => {
+          const aFreq = a.wordScores.find(s => s.word === word)?.frequency || 0;
+          const bFreq = b.wordScores.find(s => s.word === word)?.frequency || 0;
+          // First sort by section relevance, then by word frequency
+          const aScore = a.relevanceScore * aFreq;
+          const bScore = b.relevanceScore * bFreq;
+          return bScore - aScore;
+        })
+        .slice(0, 3);
+    });
+
+    // Combine and deduplicate results
+    const combinedResults = [...exactMatches, ...wordResults];
+    const uniqueResults = Array.from(new Set(combinedResults.map(r => r.text)))
+      .map(text => combinedResults.find(r => r.text === text)!)
       .slice(0, 3);
 
     // Return results or no matches message
     return {
-      content: results.length > 0 ? results.map(result => ({
+      content: uniqueResults.length > 0 ? uniqueResults.map(result => ({
         type: "text",
         text: `[${result.header}] ${result.text}`
       })) : [{
