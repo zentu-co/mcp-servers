@@ -1,0 +1,26 @@
+{
+  "bin": {
+    "svelte-docs-server": "./build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.0.4"
+  },
+  "description": "An MCP to access the docs for Svelte 5 present in llms.small.txt file",
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.3.3"
+  },
+  "files": [
+    "build"
+  ],
+  "name": "svelte-docs-server",
+  "private": true,
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', '755')\"",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "prepare": "pnpm run build",
+    "watch": "tsc --watch"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}
