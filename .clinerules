@@ -1,0 +1,6 @@
+You are developing MCP servers.
+MCP servers are debugged with: `pnpx @modelcontextprotocol/inspector build/index.js`. This will start a server in http://localhost:5173.
+The transport type is STDIO so using console.log will not work.
+The MCP servers will be used as part of Cline a VSCode extension.
+You can't restart or build the MCP server, ask the user to do so via: `pnpm build` and then to manually restart the server inside Cline's settings.
+The debugging server needs to be manually restarted every time there's a change to the index.ts file (the MCP server). The user can use the debugging server to explore tools and resources created on the server.
