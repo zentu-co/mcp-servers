@@ -4,4 +4,4 @@ The user must be running `pnpm dev` this will run two package.json scripts concu
 The transport type is STDIO so using console.log will not work.
 The MCP servers will be used as part of Cline a VSCode extension.
 You can't nor won't restart or build the MCP server, ask the user to run `pnpm dev` instead.
-The debugging/inspector will use the latest changes every time there's a change to the index.ts file (the MCP server, but the user needs to click "refresh" on the UI. For Cline the user needs to manually restart the server on the extension's UI.
+The debugging/inspector needs to be restarted everytime there's a change to the index.ts file (the MCP server, but the user needs to click "refresh" on the UI. For Cline the user needs to manually restart the server on the extension's UI.

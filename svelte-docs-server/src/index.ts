@@ -4,17 +4,25 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
+  ErrorCode,
   ListResourcesRequestSchema,
   ListToolsRequestSchema,
-  ReadResourceRequestSchema,
+  McpError,
+  ReadResourceRequestSchema
 } from "@modelcontextprotocol/sdk/types.js";
+
 interface DocumentationLine {
-  id: string;
   text: string;
   isHeader: boolean;
 }
 
-let documentationLines: DocumentationLine[] = [];
+interface DocumentationSection {
+  id: string;
+  header: string;
+  content: string[];
+}
+
+let documentationSections: DocumentationSection[] = [];
 
 // Improved relevance scoring
 function getRelevanceScore(text: string, query: string): number {
@@ -33,6 +41,7 @@ function getRelevanceScore(text: string, query: string): number {
 
 async function fetchDocumentation() {
   let retries = 3;
+  let error: Error | null = null;
   while (retries > 0) {
     try {
       const controller = new AbortController();
@@ -44,30 +53,76 @@ async function fetchDocumentation() {
       clearTimeout(timeoutId);
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new McpError(ErrorCode.InternalError, `HTTP error! status: ${response.status}`);
       }
       const content = await response.text();
+      if (!content) {
+        throw new McpError(ErrorCode.InternalError, "Received empty content from documentation URL");
+      }
 
       // Split into lines and filter out empty ones
-      const lines = content.split('\n');
-      documentationLines = lines
+      const lines = content.split('\n')
         .filter((line: string) => line.trim().length > 0)
-        .map((line: string, index: number) => ({
-          id: `line-${index}`,
-          text: line,
-          isHeader: line.startsWith('# ')
+        .map((line: string) => ({
+          text: line.trim(), // Ensure no leading/trailing whitespace
+          isHeader: line.trim().startsWith('# ')
         }));
-      return;
-    } catch (error) {
-      console.error("Failed to fetch Svelte documentation:", error instanceof Error ? error.message : String(error));
+
+      if (lines.length === 0) {
+        throw new McpError(ErrorCode.InternalError, "No content lines found in documentation");
+      }
+
+      // Process lines into sections
+      let currentSection: DocumentationSection | null = null;
+      documentationSections = [];
+
+      // Create initial section
+      currentSection = {
+        id: 'start-of-svelte-documentation',
+        header: '# Start of Svelte documentation',
+        content: []
+      };
+
+      lines.forEach(line => {
+        if (line.isHeader && line.text.trim() !== '# Start of Svelte documentation') {
+          if (currentSection) {
+            documentationSections.push(currentSection);
+          }
+          currentSection = {
+            id: line.text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^#+\s*/, ''),
+            header: line.text,
+            content: []
+          };
+        } else if (currentSection) {
+          currentSection.content.push(line.text.trim());
+        }
+      });
+
+      // Add the last section
+      if (currentSection) {
+        documentationSections.push(currentSection);
+      }
+
+      // Validate sections were loaded
+      if (documentationSections.length === 0) {
+        throw new McpError(ErrorCode.InternalError, "No documentation sections were loaded");
+      }
+
+      // Success - break out of retry loop
+      break;
+    } catch (err) {
+      error = err instanceof Error ? err : new Error(String(err));
       retries--;
       if (retries > 0) {
         await new Promise(resolve => setTimeout(resolve, 2000));
-      } else {
-        console.error("Exhausted all retry attempts");
-        process.exit(1);
       }
     }
+  }
+  if (error) {
+    throw new McpError(ErrorCode.InternalError, `Failed to fetch documentation after all retries: ${error.message}`);
+  }
+  if (documentationSections.length === 0) {
+    throw new McpError(ErrorCode.InternalError, "No documentation sections were loaded");
   }
 }
 
@@ -89,33 +144,57 @@ const server = new Server(
   }
 );
 
-// List available documentation lines as resources (excluding headers)
+// Add error handler
+server.onerror = (error) => {
+  console.error(`[MCP Error] ${error}`);
+};
+
+// List available documentation sections as resources
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  const resources = documentationLines
-    .filter(line => !line.isHeader)
-    .map(line => ({
-      uri: `svelte:///${line.id}`,
+  const resources = documentationSections.flatMap(section => [
+    {
+      uri: `svelte:///section/${section.id}`,
       mimeType: "text/plain",
-      name: "Documentation Line",
-      description: `Svelte documentation line: ${line.text.slice(0, 50)}...`
-    }));
+      name: section.header,
+      description: `Documentation section: ${section.header}`
+    },
+    {
+      uri: `svelte:///section/${section.id}/content`,
+      mimeType: "text/plain",
+      name: `${section.header} Content`,
+      description: `Content for section: ${section.header}`
+    }
+  ]);
   return { resources };
 });
 
-// Read specific documentation line
+// Read specific documentation section or content
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-  const id = request.params.uri.split('/').pop();
-  const line = documentationLines.find(l => l.id === id);
+  const match = request.params.uri.match(/^svelte:\/\/\/section\/([^/]+)(\/content)?$/);
+  if (!match) {
+    throw new McpError(ErrorCode.InvalidRequest, `Invalid URI format: ${request.params.uri}`);
+  }
 
-  if (!line) {
-    throw new Error(`Documentation line ${id} not found`);
+  const sectionId = match[1];
+  const isContent = match[2] === '/content';
+  const section = documentationSections.find(s => s.id === sectionId);
+
+  if (!section) {
+    throw new McpError(ErrorCode.InvalidRequest, `Documentation section ${sectionId} not found`);
+  }
+
+  const text = isContent ? section.content.join('\n') : section.header;
+
+  // Throw error if content is empty for debugging
+  if (isContent && (!section.content || section.content.length === 0)) {
+    throw new McpError(ErrorCode.InternalError, `Section ${sectionId} has no content. Header: ${section.header}`);
   }
 
   return {
     contents: [{
       uri: request.params.uri,
       mimeType: "text/plain",
-      text: line.text
+      text
     }]
   };
 });
@@ -157,17 +236,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Score all non-header lines
-    const scoredLines = documentationLines
-      .filter(line => !line.isHeader)
-      .map(line => ({
-        ...line,
-        score: getRelevanceScore(line.text, query)
-      }));
+    // Search through all content
+    const allContent = documentationSections.flatMap(section =>
+      section.content.map(text => ({
+        header: section.header,
+        text,
+        score: getRelevanceScore(text, query)
+      }))
+    );
 
     // Get top 3 results
-    const results = scoredLines
-      .filter(line => line.score > 0)
+    const results = allContent
+      .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
 
@@ -175,7 +255,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: results.length > 0 ? results.map(result => ({
         type: "text",
-        text: result.text
+        text: `[${result.header}] ${result.text}`
       })) : [{
         type: "text",
         text: "No matches found"
@@ -183,7 +263,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  throw new Error("Unknown tool");
+  throw new McpError(ErrorCode.MethodNotFound, "Unknown tool");
 });
 
 // Start the server
@@ -192,13 +272,14 @@ async function main() {
     await fetchDocumentation();
     const transport = new StdioServerTransport();
     await server.connect(transport);
-  } catch (error) {
-    console.error("Error during server startup:", error);
-    process.exit(1);
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    throw new McpError(ErrorCode.InternalError, `Server startup failed: ${error.message}`);
   }
 }
 
-main().catch((error) => {
-  console.error("Server error:", error);
+main().catch((err) => {
+  const error = err instanceof McpError ? err : new McpError(ErrorCode.InternalError, String(err));
+  console.error(`[MCP Error] ${error.message}`);
   process.exit(1);
 });
