@@ -19,7 +19,6 @@ async function fetchDocumentation() {
   let retries = 3;
   while (retries > 0) {
     try {
-      console.log(`Fetching Svelte documentation (attempt ${4 - retries})...`);
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -41,14 +40,6 @@ async function fetchDocumentation() {
           id: `line-${index}`,
           text: line
         }));
-
-      console.log("Successfully fetched Svelte documentation");
-      console.log(`Loaded ${documentationLines.length} lines of documentation`);
-      // Log a few sample lines to verify content
-      console.log("Sample lines:");
-      documentationLines.slice(0, 3).forEach(line => {
-        console.log(`- ${line.text}`);
-      });
       return;
     } catch (error) {
       console.error("Failed to fetch Svelte documentation:", error instanceof Error ? error.message : String(error));
@@ -83,15 +74,12 @@ const server = new Server(
 
 // List available documentation lines as resources
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  console.log(`Total documentation lines: ${documentationLines.length}`);
   const resources = documentationLines.map(line => ({
     uri: `svelte:///${line.id}`,
     mimeType: "text/plain",
     name: "Documentation Line",
     description: `Svelte documentation line: ${line.text.slice(0, 50)}...`
   }));
-  console.log("First 5 resources:");
-  resources.slice(0, 5).forEach(r => console.log(`- ${r.uri}: ${r.description}`));
   return { resources };
 });
 
@@ -139,9 +127,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "search_docs") {
     const query = String(request.params.arguments?.query).toLowerCase();
-    console.log(`Searching for query: "${query}"`);
     const queryWords = query.split(/\s+/);
-    console.log(`Query words:`, queryWords);
 
     // Score lines based purely on frequency of query matches
     const scoredLines = documentationLines.map(line => {
@@ -179,14 +165,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // Start the server
 async function main() {
-  console.log("Starting svelte-docs-server...");
   try {
     await fetchDocumentation();
-    console.log("Documentation loaded successfully");
-
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.log("Successfully connected to MCP");
   } catch (error) {
     console.error("Error during server startup:", error);
     process.exit(1);
