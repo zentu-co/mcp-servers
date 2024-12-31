@@ -11,9 +11,25 @@ import {
 interface DocumentationLine {
   id: string;
   text: string;
+  isHeader: boolean;
 }
 
 let documentationLines: DocumentationLine[] = [];
+
+// Improved relevance scoring
+function getRelevanceScore(text: string, query: string): number {
+  text = text.toLowerCase();
+  query = query.toLowerCase();
+
+  // Exact match gets highest score
+  if (text.includes(query)) return 3;
+
+  // Count individual word matches
+  const queryWords = query.split(/\s+/);
+  return queryWords.reduce((score, word) => {
+    return score + (text.includes(word) ? 1 : 0);
+  }, 0);
+}
 
 async function fetchDocumentation() {
   let retries = 3;
@@ -38,7 +54,8 @@ async function fetchDocumentation() {
         .filter((line: string) => line.trim().length > 0)
         .map((line: string, index: number) => ({
           id: `line-${index}`,
-          text: line
+          text: line,
+          isHeader: line.startsWith('# ')
         }));
       return;
     } catch (error) {
@@ -72,14 +89,16 @@ const server = new Server(
   }
 );
 
-// List available documentation lines as resources
+// List available documentation lines as resources (excluding headers)
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
-  const resources = documentationLines.map(line => ({
-    uri: `svelte:///${line.id}`,
-    mimeType: "text/plain",
-    name: "Documentation Line",
-    description: `Svelte documentation line: ${line.text.slice(0, 50)}...`
-  }));
+  const resources = documentationLines
+    .filter(line => !line.isHeader)
+    .map(line => ({
+      uri: `svelte:///${line.id}`,
+      mimeType: "text/plain",
+      name: "Documentation Line",
+      description: `Svelte documentation line: ${line.text.slice(0, 50)}...`
+    }));
   return { resources };
 });
 
@@ -138,34 +157,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Search each word separately and get top results
-    const wordResults = queryWords.map(word => {
-      // Score lines based on frequency of word matches
-      const scoredLines = documentationLines.map(line => {
-        const text = line.text.toLowerCase();
-        // Escape special regex characters and count exact occurrences
-        const escapedWord = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const matches = (text.match(new RegExp(escapedWord, 'gi')) || []).length;
-        return { ...line, score: matches };
-      });
+    // Score all non-header lines
+    const scoredLines = documentationLines
+      .filter(line => !line.isHeader)
+      .map(line => ({
+        ...line,
+        score: getRelevanceScore(line.text, query)
+      }));
 
-      // Get top result for this word
-      return scoredLines
-        .filter(line => line.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 1)
-        .map(line => ({
-          word,
-          uri: `svelte:///${line.id}`,
-          content: line.text
-        }))[0];
-    }).filter(result => result !== undefined);
+    // Get top 3 results
+    const results = scoredLines
+      .filter(line => line.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
 
     // Return results or no matches message
     return {
-      content: wordResults.length > 0 ? wordResults.map(result => ({
+      content: results.length > 0 ? results.map(result => ({
         type: "text",
-        text: `Match for "${result.word}": ${result.content}`
+        text: result.text
       })) : [{
         type: "text",
         text: "No matches found"
